@@ -60,7 +60,7 @@ class Alesia():
         self.budget = budget
         ## Fair game if token_space is odd, favour to player A (go towards index 0) if even
         self.token_space = list(range(token_space + 2))
-        self.terminal_state = (0, token_space + 1)
+        self.terminate = False
     
         self.state = None
 
@@ -69,37 +69,56 @@ class Alesia():
     def reset(self):
         ## Full budget for player A and B, token_space is set to be the middle
         self.state = (math.floor(self.token_space / 2) , self.budget, self.budget)
+        return self.state
 
-    def get_state_transition(self, curr_state, action_A, action_B):
-        ## Assume that action_A and action_B are valid, that is curr_state[1] - action_A >= 0 and curr_state[2] - action_B >= 0
+    def check_termination(self):
+        if self.state[0] == 0 or self.state[0] == (len(self.token_space) - 1):
+            self.terminate = True
+            return True
+        elif self.state[1] == 0 and self.state[2] == 0:
+            self.terminate = True
+            return True
+        else:
+            self.terminate = False
+            return False
 
-        result = np.zeros((self.token_space, self.budget, self.budget))
-        if action_A == action_B:
-            result[curr_state[0], curr_state[1] - action_A, curr_state[2] - action_B] = 1
-        elif action_A > action_B:
-            result[curr_state[0] - 1, curr_state]
-
-        return result
-
-
-    def get_reward(self, curr_state, action_A, action_B):
+    def get_reward(self):
+        if self.state[0] == 0:
+            return -1
+        if self.state[0] == len(self.token_space) - 1:
+            return 1
         return 0
 
-    def step(self, action):
+    def get_state_transition(self, action_A, action_B):
+        ## Assume that action_A and action_B are valid, that is curr_state[1] - action_A >= 0 and curr_state[2] - action_B >= 0
+        ## Also, self.terminate is False
+        result = np.zeros((len(self.token_space), self.budget, self.budget))
+        if action_A == action_B:
+            result[self.state[0], self.state[1] - action_A, self.state[2] - action_B] = 1
+            self.state = (self.state[0], self.state[1] - action_A, self.state[2] - action_A)
+        elif action_A > action_B:
+            result[self.state[0] - 1, self.state[1] - action_A, self.state[2] - action_B] = 1
+            self.state = (self.state[0] - 1, self.state[1] - action_A, self.state[2] - action_A)
+        else:
+            result[self.state[0] + 1, self.state[1] - action_A, self.state[2] - action_B] = 1
+            self.state = (self.state[0] + 1, self.state[1] - action_A, self.state[2] - action_A)
+        return result
+
+    def get_action_space(self):
+        return [list(range(1, self.state[1] + 1)), list(range(1, self.state[2] + 2))]
+
+    def step(self, action_A, action_B):
         if self.state is None:
             raise Exception('step() used before calling reset()')
-        assert action in range(self.P.shape[0])
+        action_space = self.get_action_space()
+        assert action_A in action_space[0]
+        assert action_B in action_space[1]
 
-        reward = self.r[self.state, action] \
-            + np.random.normal(loc=0, scale=0)
-        self.state = np.random.choice(a=self.n, p=self.P[action, self.state])
+        token_budget_state_space = self.get_state_transition(action_A, action_B)
+        reward = self.get_reward()
+        done = self.check_termination()
         self.t = self.t + 1
-
-        done = False
-        if self.state in self.terminal_states:
-            done = True
-
-        return self.state, reward, done, {}
+        return token_budget_state_space, reward, done, {}
 
     def calc_v_pi(self, pi, gamma):
         # calculate P_pi from the transition matrix P and the policy pi
