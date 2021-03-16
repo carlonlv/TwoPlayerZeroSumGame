@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import math
 import time
 import matplotlib.pyplot as plt
@@ -158,7 +159,30 @@ class Alesia():
 
         self.t = self.t + 1
         return done, reward, self.state, {}
+
+    def sample_from_env(self, num_samples):
+        # This sampling method is not based on trajectory
+        sampled_data = pd.DataFrame(columns=["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B", "to_token_pos", "to_budget_A", "to_budget_B", "reward"])
         
+        ## Independently sample states and bugets, also uniformly, can be changed
+        sampled_token_pos = np.random.randint(low = 1, high = len(self.token_space) - 1, size = num_samples)
+        sampled_budget_A = np.random.randint(low = 1, high = self.budget + 1, size = num_samples)
+        sampled_budget_B = np.random.randint(low = 1, high = self.budget + 1, size = num_samples)
+        
+        for i in range(0, num_samples):
+            curr_sampled_token_pos = sampled_token_pos[i]
+            curr_sampled_budget_A = sampled_budget_A[i]
+            curr_sampled_budget_B = sampled_budget_B[i]
+            action_space = Alesia.get_action_space(curr_sampled_budget_A, curr_sampled_budget_B)
+            curr_sampled_action_A = np.random.choice(action_space[0], size = 1)
+            curr_sampled_action_B = np.random.choice(action_space[1], size = 1)
+            token_budget_state_space = Alesia.get_state_transition(self.token_space, self.budget, curr_sampled_token_pos, curr_sampled_budget_A, curr_sampled_budget_B, curr_sampled_action_A, curr_sampled_action_B)
+            curr_sampled_to_state = Alesia.state_sampler(1, self.token_space, self.budget, token_budget_state_space)
+            curr_sampled_reward = Alesia.get_reward(curr_sampled_to_state[0], self.token_space)
+            sample = pd.Series([curr_sampled_token_pos, curr_sampled_budget_A, curr_sampled_budget_B, curr_sampled_action_A, curr_sampled_action_B, curr_sampled_to_state[0], curr_sampled_to_state[1], curr_sampled_to_state[2], curr_sampled_reward],
+            name = ["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B", "to_token_pos", "to_budget_A", "to_budget_B", "reward"])
+            sampled_data = pd.concat([sampled_data, sample])
+        return sampled_data        
 
 
 class Agent():
