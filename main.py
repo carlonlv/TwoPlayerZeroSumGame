@@ -53,97 +53,112 @@ tabular_features = np.array([[0, 0, 0, 0, 0],  # s_0 terminal
 ## Transition State, action 1, action 2, State (n * n * 6)
 
 class Alesia():
-    def __init__(self, P, r, budget, token_space):
-        self.P = P
-        self.r = r
-
+    def __init__(self, budget, token_space):
         self.budget = budget
-        ## Fair game if token_space is odd, favour to player A (go towards index 0) if even
-        self.token_space = list(range(token_space + 2))
+        self.token_space = token_space
         self.terminate = False
-    
+        
+        # A tuple (token_pos, budget_A, budget_B)
+        # token_pos can go from 0 to token_space + 1. 
+        # budget_A and budget_B can go from 0 to budget
         self.state = None
 
         self.t = 0
 
     def reset(self):
-        ## Full budget for player A and B, token_space is set to be the middle
-        self.state = (math.floor(self.token_space / 2) , self.budget, self.budget)
+        # Full budget for player A and B, token_space is set to be the middle
+        # Fair game if token_space is odd, favour to player A (go to index 0) if even
+        self.state = (math.floor(self.token_space) / 2 , self.budget, self.budget)
+        self.terminate = False
+        self.t = 0
         return self.state
 
-    def check_termination(self):
-        if self.state[0] == 0 or self.state[0] == (len(self.token_space) - 1):
-            self.terminate = True
+    @staticmethod
+    def check_termination(token_pos, token_space, budget_A, budget_B):
+        if token_pos == 0 or token_pos == token_space + 1:
             return True
-        elif self.state[1] == 0 and self.state[2] == 0:
-            self.terminate = True
+        elif budget_A == 0 and budget_B == 0:
             return True
         else:
-            self.terminate = False
             return False
 
-    def get_reward(self):
-        if self.state[0] == 0:
+    @staticmethod
+    def get_reward(token_pos, token_space):
+        if token_pos == 0:
             return -1
-        if self.state[0] == len(self.token_space) - 1:
+        if token_pos == token_space + 1:
             return 1
         return 0
 
-    def get_state_transition(self, action_A, action_B):
-        ## Assume that action_A and action_B are valid, that is curr_state[1] - action_A >= 0 and curr_state[2] - action_B >= 0
-        ## Also, self.terminate is False
-        result = np.zeros((len(self.token_space), self.budget, self.budget))
+    @staticmethod
+    def get_state_transition(token_space, total_budget, token_pos, budget_A, budget_B, action_A, action_B):
+        # Assume that action_A and action_B are valid, that is curr_state[1] - action_A >= 0 and curr_state[2] - action_B >= 0
+        # Also, self.terminate is False
+        # Returns a 3d transition matrix, (token_pos, budget_A, budget_B)
+        result = np.zeros((token_space + 2, total_budget + 1, total_budget + 1))
+        if action_A is None and action_B is None:
+            raise Exception('Both action A and B is None, called before checking termination.')
+        if action_A is None:
+            result[token_pos + 1, budget_A, budget_B - action_B] = 1
+            return result
+        if action_B is None:
+            result[token_pos - 1, budget_A - action_A, budget_B] = 1
+            return result
         if action_A == action_B:
-            result[self.state[0], self.state[1] - action_A, self.state[2] - action_B] = 1
-            self.state = (self.state[0], self.state[1] - action_A, self.state[2] - action_A)
+            result[token_pos, budget_A - action_A, budget_B - action_B] = 1
         elif action_A > action_B:
-            result[self.state[0] - 1, self.state[1] - action_A, self.state[2] - action_B] = 1
-            self.state = (self.state[0] - 1, self.state[1] - action_A, self.state[2] - action_A)
+            result[token_pos - 1, budget_A - action_A, budget_B - action_B] = 1
         else:
-            result[self.state[0] + 1, self.state[1] - action_A, self.state[2] - action_B] = 1
-            self.state = (self.state[0] + 1, self.state[1] - action_A, self.state[2] - action_A)
+            result[token_pos + 1, budget_A - action_A, budget_B - action_B] = 1
         return result
 
-    def get_action_space(self):
-        return [list(range(1, self.state[1] + 1)), list(range(1, self.state[2] + 2))]
+    @staticmethod
+    def get_action_space(budget_A, budget_B):
+        return [list(range(1, budget_A + 1)), list(range(1, budget_B + 1))]  
+
+    @staticmethod
+    def get_token_pos_space(token_space):
+        return list(range(0, token_space + 2)) 
+
+    @staticmethod
+    def state_sampler(num_samples, token_space, total_budget, transition_distribution, replace = False):
+        token_pos_space = Alesia.get_token_pos_space(token_space)
+        budget_A_space = list(range(0, total_budget + 1))
+        budget_B_space = list(range(0, total_budget + 1))
+
+        idx = np.arange(len(token_pos_space) * len(budget_A_space) * len(budget_B_space))
+        sampled_state_idx = np.random.choice(idx, size = num_samples, replace = replace, 
+        p = np.reshape(transition_distribution, -1))
+        
+        idx = np.reshape(idx, (len(token_pos_space), len(budget_A_space), len(budget_B_space)))
+        result = []
+        for i in sampled_state_idx:
+            coordinate = np.where(idx == i)
+            sampled_token_pos = token_pos_space[coordinate[0][0]]
+            sampled_budget_A = budget_A_space[coordinate[1][0]]
+            sampled_budget_B = budget_B_space[coordinate[2][0]]
+            result.append((sampled_token_pos, sampled_budget_A, sampled_budget_B))
+        return result
 
     def step(self, action_A, action_B):
         if self.state is None:
             raise Exception('step() used before calling reset()')
-        action_space = self.get_action_space()
+        action_space = Alesia.get_action_space(self.state[1], self.state[2])
         assert action_A in action_space[0]
         assert action_B in action_space[1]
 
-        token_budget_state_space = self.get_state_transition(action_A, action_B)
-        reward = self.get_reward()
-        done = self.check_termination()
+        done = Alesia.check_termination(self.state[0], self.token_space, self.state[1], self.state[2])
+        self.terminate = done
+        
+        reward = Alesia.get_reward(self.state[0], self.token_space)
+
+        if not done:
+            token_budget_state_space = Alesia.get_state_transition(self.token_space, self.budget, self.state[0], self.state[1], self.state[2], action_A, action_B)
+            self.state = Alesia.state_sampler(1, self.token_space, self.budget, token_budget_state_space)
+
         self.t = self.t + 1
-        return token_budget_state_space, reward, done, {}
-
-    def calc_v_pi(self, pi, gamma):
-        # calculate P_pi from the transition matrix P and the policy pi
-        P_pi = np.zeros(self.P[0].shape)
-        for a in range(pi.shape[1]):
-            P_pi += self.P[a] * pi[:, a].reshape(-1, 1)
-
-        # calculate the vector r_pi
-        r_pi = (self.r * pi).sum(1).reshape(-1, 1)
-
-        # calculate v_pi using the equation given above
-        v_pi = np.matmul(
-            np.linalg.inv(np.eye(self.P.shape[-1]) - gamma * P_pi), 
-            r_pi)
-
-        return v_pi
-
-    # Calculate the ground truth state-action value function based on the 
-    # ground truth state value function.
-    def calc_q_pi(self, pi, gamma):
-        # First calcuate the ground truth value vector.
-        v_pi = self.calc_v_pi(pi, gamma)
-        q_pi = self.r + gamma * (self.P @ v_pi)[:, :, 0].T
-        return q_pi
-
+        return done, reward, self.state, {}
+        
 
 
 class Agent():
@@ -279,8 +294,7 @@ class Agent():
 
 
 def run_experiment(num_runs, num_episodes,
-                   P, r, start_state, terminal_state,
-                   num_actions, policy_features, value_features,
+                   P, r, budget, token_space, policy_features, value_features,
                    policy_stepsize, value_stepsize, nstep, lambdas, gamma,
                    FLAG_BASELINE, FLAG_LEARN_VPI, reward_noise=0, vpi_bias=0):
     bias_ = []
@@ -290,7 +304,7 @@ def run_experiment(num_runs, num_episodes,
         np.random.seed(0) 
 
         # define agent and the environment
-        env = Alesia(P, r, start_state, terminal_states, reward_noise)
+        env = Alesia(budget, token_space)
 
         agent = Agent(num_actions, policy_features, value_features,
                     policy_stepsize, value_stepsize, nstep, lambda_, gamma,
@@ -318,7 +332,7 @@ def run_experiment(num_runs, num_episodes,
                 state = env.reset()
                 while not done:
                     action, action_prob = agent.take_action(state)
-                    next_state, reward, done, _ = env.step(action)
+                    done, reward, next_state , _ = env.step(action)
 
                     traj['state_list'].append(state)
                     traj['action_list'].append(action)
@@ -408,8 +422,7 @@ for nstep in nstep_list:
         value_stepsize = stepsize
 
         dat = run_experiment(num_runs, num_episodes,
-                             P, r, start_state, terminal_states,
-                             num_actions, policy_features, value_features,
+                             budget, token_space, policy_features, value_features,
                              policy_stepsize, value_stepsize, nstep, lambdas, gamma, 
                              FLAG_BASELINE, FLAG_LEARN_VPI, reward_noise)
         
