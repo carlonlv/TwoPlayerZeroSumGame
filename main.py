@@ -8,53 +8,6 @@ import pandas as pd
 import scipy.optimize
 import sklearn as sk
 
-P = np.array([[[1, 0, 0, 0, 0, 0, 0],    # s_0 terminal \
-               [1, 0, 0, 0, 0, 0, 0],    # s_1           |
-               [0, 1, 0, 0, 0, 0, 0],    # s_2           |
-               [0, 0, 1, 0, 0, 0, 0],    # s_3           |-> for action a_0 i.e. left          
-               [0, 0, 0, 1, 0, 0, 0],    # s_4           |
-               [0, 0, 0, 0, 1, 0, 0],    # s_5           |
-               [0, 0, 0, 0, 0, 0, 1]],   # s_6 terminal /
-              
-              [[1, 0, 0, 0, 0, 0, 0],    # s_0 terminal \
-               [0, 0, 1, 0, 0, 0, 0],    # s_1           |
-               [0, 0, 0, 1, 0, 0, 0],    # s_2           |
-               [0, 0, 0, 0, 1, 0, 0],    # s_3           |-> for action a_1 i.e. right
-               [0, 0, 0, 0, 0, 1, 0],    # s_4           |
-               [0, 0, 0, 0, 0, 0, 1],    # s_5           |
-               [0, 0, 0, 0, 0, 0, 1]]])  # s_6 terminal /
-#  State:       0  1  2  3  4  5  6
-
-
-
-r = np.array([[0, 0],  # s_0
-              [0, 0],  # s_1
-              [0, 0],  # s_2
-              [0, 0],  # s_3
-              [0, 0],  # s_4
-              [0, 1],  # s_5
-              [0, 0]]) # s_6
-# Action:    a_0  a_1
-
-pi = np.array([[0.5, 0.5],  # s_0
-               [0.5, 0.5],  # s_1
-               [0.5, 0.5],  # s_2
-               [0.5, 0.5],  # s_3
-               [0.5, 0.5],  # s_4
-               [0.5, 0.5],  # s_5
-               [0.5, 0.5]]) # s_6
-# Action:       a_0  a_1
-
-tabular_features = np.array([[0, 0, 0, 0, 0],  # s_0 terminal
-                             [1, 0, 0, 0, 0],  # s_1
-                             [0, 1, 0, 0, 0],  # s_2  
-                             [0, 0, 1, 0, 0],  # s_3
-                             [0, 0, 0, 1, 0],  # s_4
-                             [0, 0, 0, 0, 1],  # s_5
-                             [0, 0, 0, 0, 0]]) # s_6 terminal
-
-## Transition State, action 1, action 2, State (n * n * 6)
-
 class Alesia():
     def __init__(self, budget, token_space):
         self.budget = budget
