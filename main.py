@@ -3,9 +3,11 @@ import time
 from itertools import chain
 
 import matplotlib.pyplot as plt
+import nashpy as nash
 import numpy as np
 import pandas as pd
 import sklearn as sk
+
 
 class Alesia():
     def __init__(self, budget, token_space):
@@ -254,15 +256,20 @@ class Agent():
     def find_optimal_policies(estimated_q_function, game_env):
         ## Q function :(token_pos, budget_A, budget_B, action_A, action_B)
         ## Policy A is 4 dimension (action_A, from_token_pos, from_budget_A, from_budget_B), policy A minimizes target
+        ## Policy B is 4 dimension (action_B, from_token_pos, from_budget_A, from_budget_B), policy B maximizes target
+        
+        rps = nash.Game(estimated_q_function)
+
         policy_A = np.zeros((game_env.budget + 1) * (game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1))
+        policy_B = np.zeros((game_env.budget + 1) * (game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1))
         
         from_state_action_idx = np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
         it = np.nditer(from_state_action_idx, flags = ["multi_index"], op_flags = ["readwrite"])
         for _ in it:
             policy_A[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = np.argmin(estimated_q_function[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :], axis = 0)
+            policy_B[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]]
 
-
-        ## Policy B is 4 dimension (action_B, from_token_pos, from_budget_A, from_budget_B), policy B maximizes target
+        
         
             
 
