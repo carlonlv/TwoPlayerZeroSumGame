@@ -5,7 +5,6 @@ from itertools import chain
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scipy.optimize
 import sklearn as sk
 
 class Alesia():
@@ -174,9 +173,9 @@ class Agent():
         self.estimated_reward_function = None
         ## 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
         self.estimated_transition_function = None
-        ## 6 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B)
+        ## 4 dimension array in order of (action_A, from_token_pos, from_budget_A, from_budget_B)
         self.policy_A = initial_policy_A
-        ## 6 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B)
+        ## 6 dimension array in order of (action_B, from_token_pos, from_budget_A, from_budget_B)
         self.policy_B = None
         ## 5 dimension array in order of (token_pos, budget_A, budget_B, action_A, action_B)
         self.q_function = initial_q
@@ -203,23 +202,30 @@ class Agent():
         from_state_action_pair = training_set[["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B"]]
         to_states = training_set[["to_token_pos", "to_budget_A", "to_budget_B"]]
 
+
+        ## Here we use multionmial logistic to model the transition probability, this method does not consider difference in value function.
+        
+        state_index_dict = np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))
+        to_states_index = np.zeros(len(to_states.index))
+        
+        for i in range(0, len(to_states.index)):
+            to_states_index[i] = state_index_dict[to_states.iloc[i, 0], to_states.iloc[i, 1], to_states.iloc[i, 2]]
+        to_states_index = pd.Series(to_states_index)
+
+        trained_model = sk.linear_model.LogisticRegression(multi_class= "multinomial", solver="lbfgs").fit(from_state_action_pair, to_states_index)
+
          ## 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
         estimated_transition_dist = np.zeros((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
 
         from_state_action_idx = np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
-        it = np.nditer(from_state_action_idx, flags = ["multi_index"])
+        it = np.nditer(from_state_action_idx, flags = ["multi_index"], op_flags = ["readwrite"])
         for _ in it:
-            subset_idx = (from_state_action_pair["from_token_pos"] == it.multi_index[0]) & (from_state_action_pair["from_budget_A"] == it.multi_index[1]) & (from_state_action_pair["from_budget_B"] == it.multi_index[2]) & (from_state_action_pair["action_A"] == it.multi_index[6]) & (from_state_action_pair["action_B"] == it.multi_index[7])
-            sub_training_state_action = from_state_action_pair[subset_idx]
-            sub_training_to_states = to_states[subset_idx]
-
-            if (len(sub_training_state_action.index) == 0):
-                ## No obs from training set in this transition, assign transition of prob 1 to exact same state
-                estimated_transition_dist[it.multi_index[0], it.multi_index[1], it.multi_index[2], it.multi_index[0], it.multi_index[1], it.multi_index[2], it.multi_index[6], it.multi_index[7]] = 1
-            else:
-                ## Fit linear regression model with constraints from 0 to 1, will normalize the coefficient to sum to 1
-                ### I have some questions about this step
-                estimated_transition_dist[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :, :, it.multi_index[6], it.multi_index[7]] = np.zeros((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))
+            regressor = pd.DataFrame([list(it.multi_index)], columns = from_state_action_pair.values.tolist())
+            predicted_probs = trained_model.predict_proba(regressor)
+            to_probs = np.zeros((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1))
+            to_probs[trained_model.classes_] = predicted_probs
+            to_probs = to_probs.reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))
+            estimated_transition_dist[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :, :, it.multi_index[6], it.multi_index[7]] = to_probs
         return estimated_transition_dist
 
     
@@ -245,8 +251,19 @@ class Agent():
         return curr_q
     
     @staticmethod
-    def find_optimal_policies(estimated_q_function):
-        pass
+    def find_optimal_policies(estimated_q_function, game_env):
+        ## Q function :(token_pos, budget_A, budget_B, action_A, action_B)
+        ## Policy A is 4 dimension (action_A, from_token_pos, from_budget_A, from_budget_B), policy A minimizes target
+        policy_A = np.zeros((game_env.budget + 1) * (game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1))
+        
+        from_state_action_idx = np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
+        it = np.nditer(from_state_action_idx, flags = ["multi_index"], op_flags = ["readwrite"])
+        for _ in it:
+            policy_A[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = np.argmin(estimated_q_function[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :], axis = 0)
+
+
+        ## Policy B is 4 dimension (action_B, from_token_pos, from_budget_A, from_budget_B), policy B maximizes target
+        
             
 
     def update_policy(self):
@@ -266,7 +283,7 @@ class Agent():
             self.estimated_transition_function = Agent.estimate_transition_distribution(training_set, self.value_function, self.game_env)
 
             ## Estimate Value function and Q function
-            estimate_q_function(q_0, estimated_reward_function, estimated_transition_function, policy_A, num_iter_q, gamma)
+            Agent.estimate_q_function(self.q_function, self.estimated_reward_function, self.estimated_transition_function, policy_A, num_iter_q, gamma)
 
 
             ### Initialize Q_k_0
