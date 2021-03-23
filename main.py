@@ -1,7 +1,7 @@
 import math
 import time
 from itertools import chain
-from multiprocessing import Process
+import multiprocessing as mp
 
 import matplotlib.pyplot as plt
 import nashpy as nash
@@ -201,6 +201,7 @@ class Agent():
         ## 3 dimension array in order of (token_pos, budget_A, budget_B)
         self.value_function = None
 
+
     @staticmethod
     def estimate_reward_distribution(training_set, game_env):
         print("Estimating reward distribution...")
@@ -256,7 +257,13 @@ class Agent():
     def estimate_q_function(q_0, estimated_reward_function, estimated_transition_function, policy_A, num_iter_q, gamma):
         print("Estimating Q function...")
         curr_q = q_0
-        for _ in tqdm.tqdm(range(num_iter_q)):
+        l2_change = np.Inf
+
+        tolerance = 0.001
+        curr_iter = 1
+
+        pbar = tqdm.tqdm(total = num_iter_q)
+        while (l2_change > tolerance) or (curr_iter < num_iter_q):
             ##  Q function :(token_pos, budget_A, budget_B, action_A, action_B)
             ##  policy A : (action_A, token_pos, budget_A, budget_B)
             ## mod_policy_A : (token_pos, budget_A, budget_B, action_A, 1)
@@ -270,7 +277,14 @@ class Agent():
             ## estimated_reward_function (token_pos, budget_A, budget_B, action_A, action_B)
             ## estimated_transition_function (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
             mod_value_func = value_func[:, :, :, np.newaxis, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
-            curr_q = estimated_reward_function + gamma * np.sum(np.multiply(estimated_transition_function, mod_value_func), axis = (3, 4, 5))
+            new_q = estimated_reward_function + gamma * np.sum(np.multiply(estimated_transition_function, mod_value_func), axis = (3, 4, 5))
+
+            l2_change = np.linalg.norm(new_q - curr_q)
+            curr_q = new_q
+            curr_iter = curr_iter + 1
+            pbar.update(1)
+        pbar.close()            
+            
         return curr_q
 
 
@@ -346,7 +360,7 @@ class Agent():
     def make_action(self):
         ## This is the main function
         for k in range(0, self.num_iter_k):
-            print(k)
+            print("Number of iteration: " + str(k))
 
             ## Draw samples by interacting with the environment
             training_set = self.game_env.sample_from_env(self.num_sample_n)
@@ -363,7 +377,7 @@ class Agent():
 
             self.value_function = Agent.estimate_value_function_from_q_function(self.q_function, self.policy_A, self.policy_B)
 
-            action_A, action_B = Agent.sample_from_policy(self.policy_A, self.policy_B, self.game_env)
+        action_A, action_B = Agent.sample_from_policy(self.policy_A, self.policy_B, self.game_env)
         return action_A, action_B
         
 
@@ -395,10 +409,10 @@ def run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_ite
 
 budget = 6
 token_space = 5
-gamma = 0.8
+gamma = 0.5
 num_iter_k = 10
 num_sample_n = 7 * 7 * 7 * 10
-num_iter_q = 20
+num_iter_q = 500
 initial_q = np.zeros((token_space + 2, budget + 1, budget + 1, budget + 1, budget + 1))
 initial_policy_A = None
 
