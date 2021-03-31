@@ -1,13 +1,14 @@
+import itertools
 import math
-import time
-from itertools import chain
 import multiprocessing as mp
+import time
 
 import matplotlib.pyplot as plt
 import nashpy as nash
 import numpy as np
 import pandas as pd
 import tqdm
+from scipy.stats import entropy
 from sklearn import linear_model
 
 
@@ -319,10 +320,17 @@ class Agent():
         it = np.nditer(from_state_idx, flags = ["multi_index"], op_flags = ["readwrite"])
         for _ in tqdm.tqdm(it, total = from_state_idx.size):
             ## Row player: policy A, minimizer, Column player: policy B, maximizer
-            matrixGame = nash.Game(-1 * estimated_q_function[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :])
-            equi_policy = list(matrixGame.support_enumeration())
-            policy_A[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = equi_policy[0][0]
-            policy_B[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = equi_policy[0][1]
+            matrixGame = nash.Game(estimated_q_function[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :])
+            equilibriums = matrixGame.support_enumeration()
+            max_entropy = -np.inf
+            for eqs in equilibriums:
+                curr_policy_A = eqs[0]
+                curr_policy_B = eqs[1]
+                curr_entropy = entropy(curr_policy_A) + entropy(curr_policy_B)
+                if max_entropy < curr_entropy:
+                    max_entropy = curr_entropy
+                    policy_A[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = curr_policy_A
+                    policy_B[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = curr_policy_B
         return policy_A, policy_B
 
 
