@@ -2,6 +2,7 @@ import itertools
 import math
 import multiprocessing as mp
 import time
+import functools
 
 import matplotlib.pyplot as plt
 import nashpy as nash
@@ -11,6 +12,26 @@ import scipy as sp
 import tqdm
 from scipy.stats import entropy
 from sklearn import linear_model
+
+
+def find_nash_equilibrium(from_states, estimated_q_function, row_num):
+            token_pos = from_states.iloc[row_num, 0]
+            budget_A = from_states.iloc[row_num, 1]
+            budget_B = from_states.iloc[row_num, 2]
+            matrixGame = nash.Game(estimated_q_function[token_pos, budget_A, budget_B, :, :])
+            equilibriums = matrixGame.support_enumeration(non_degenerate = False, tol = 0)
+            max_entropy = -np.inf
+            policy_A = None
+            policy_B = None
+            for eqs in equilibriums:
+                curr_policy_B = eqs[0]
+                curr_policy_A = eqs[1]
+                curr_entropy = entropy(curr_policy_A) + entropy(curr_policy_B)
+                if max_entropy < curr_entropy:
+                    max_entropy = curr_entropy
+                    policy_A = curr_policy_A
+                    policy_B = curr_policy_B
+            return [policy_A, policy_B]
 
 
 class Alesia():
@@ -25,6 +46,9 @@ class Alesia():
         self.state = None
 
         self.t = 0
+
+        self.state_transition_dist = self.get_state_transition_dist()
+        self.expected_reward = self.get_expected_reward()
 
     def reset(self):
         # Full budget for player A and B, token_space is set to be the middle
@@ -44,35 +68,53 @@ class Alesia():
             return False
 
     @staticmethod
-    def get_reward(token_pos, budget_A, budget_B, action_A, action_B, token_space):            
+    def get_reward(token_pos, budget_A, budget_B, action_A, action_B, token_space):  
+        if token_pos == 0:
+            return -1, -1
+        if token_pos == token_space + 1:
+            return 1, 1
+        if action_A is None or action_B is None:
+            return 0, 0
         if action_B > action_A:
             if token_pos == token_space:
-                return 1
+                return 1, 1
 
             lower_point = np.linspace(start = 0, stop = 0.5, num = budget_B, endpoint = False)
-            if action_A is None:
-                lower_point = lower_point[len(lower_point) - action_B]
-            else:
-                lower_point = lower_point[len(lower_point) - (action_B - action_A)]
-            return np.random.uniform(low = lower_point, high = 0.5, size = 1)[0]
+            lower_point = lower_point[len(lower_point) - (action_B - action_A)]
+            return np.random.uniform(low = lower_point, high = 0.5, size = 1)[0], 0.5 * (0.5 + lower_point)
             
         elif action_A > action_B:
             if token_pos == 1:
-                return -1
+                return -1, -1
 
             higher_point = np.linspace(start = 0, stop = -0.5, num = budget_A, endpoint = False)
-            if action_B is None:
-                higher_point = higher_point[len(higher_point) - action_A]
-            else:
-                higher_point = higher_point[len(higher_point) - (action_A - action_B)]
-            return np.random.uniform(low = -0.5, high = higher_point, size = 1)[0]
+            higher_point = higher_point[len(higher_point) - (action_A - action_B)]
+            return np.random.uniform(low = -0.5, high = higher_point, size = 1)[0], 0.5 * (-0.5 + higher_point)
         
         else:
-            higher_point = np.linspace(start = 0, stop = -0.5, num = budget_A, endpoint = False)
-            higher_point = higher_point[len(higher_point) - action_A]
-            lower_point = np.linspace(start = 0, stop = 0.5, num = budget_B, endpoint = False)
-            lower_point = lower_point[len(lower_point) - action_B]
-            return np.random.uniform(low = higher_point, high = lower_point, size = 1)[0]
+            if action_A == 0 and action_B == 0:
+                return 0, 0
+            else:
+                higher_point = np.linspace(start = 0, stop = -0.5, num = budget_A, endpoint = False)
+                higher_point = higher_point[len(higher_point) - action_A]
+                lower_point = np.linspace(start = 0, stop = 0.5, num = budget_B, endpoint = False)
+                lower_point = lower_point[len(lower_point) - action_B]
+                return np.random.uniform(low = higher_point, high = lower_point, size = 1)[0], 0.5 * (higher_point + lower_point)
+
+    def get_expected_reward(self):
+        result = np.zeros((self.token_space + 2, self.budget + 1, self.budget + 1, self.budget + 1, self.budget + 1))
+        with np.nditer(result, flags = ["multi_index"], op_flags = ["readwrite"]) as it:
+            for x in tqdm.tqdm(it, total = result.size):
+                action_space = Alesia.get_action_space(it.multi_index[1], it.multi_index[2])
+                action_A = it.multi_index[3]
+                action_B = it.multi_index[4]
+                if not action_A in action_space[0] :
+                    action_A = None
+                if not action_B in action_space[1]:
+                    action_B = None 
+                _, expected_reward = Alesia.get_reward(it.multi_index[0], it.multi_index[1], it.multi_index[2], action_A, action_B, self.token_space)
+                x[...] = expected_reward
+        return result
 
     @staticmethod
     def get_state_transition(token_space, total_budget, token_pos, budget_A, budget_B, action_A, action_B):
@@ -87,6 +129,30 @@ class Alesia():
         else:
             result[token_pos + 1, budget_A - action_A, budget_B - action_B] = 1
         return result
+    
+    def get_state_transition_dist(self):
+        ## 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
+        print("Retrieving actual transitional distribution...")
+        result = np.zeros((self.token_space + 2, self.budget + 1, self.budget + 1, self.token_space + 2, self.budget + 1, self.budget + 1, self.budget + 1, self.budget + 1))
+        from_state_action = result[:, :, :, 0, 0, 0, :, :]
+        with np.nditer(from_state_action, flags = ["multi_index"], op_flags = ["readwrite"]) as it:
+            for _ in tqdm.tqdm(it, total = from_state_action.size):
+                action_space = Alesia.get_action_space(it.multi_index[1], it.multi_index[2])
+                action_A = it.multi_index[3]
+                action_B = it.multi_index[4]
+                if not action_A in action_space[0] :
+                    action_A = None
+                if not action_B in action_space[1]:
+                    action_B = None
+                done = Alesia.check_termination(it.multi_index[0], self.token_space, it.multi_index[1], it.multi_index[2])
+                if not done:
+                    if action_A is None or action_B is None:
+                        result[it.multi_index[0], it.multi_index[1], it.multi_index[2], it.multi_index[0], it.multi_index[1], it.multi_index[2], it.multi_index[3], it.multi_index[4]] = 1
+                    else:
+                        result[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :, :, it.multi_index[3], it.multi_index[4]] = Alesia.get_state_transition(self.token_space, self.budget, it.multi_index[0], it.multi_index[1], it.multi_index[2], action_A, action_B)
+                else:
+                    result[it.multi_index[0], it.multi_index[1], it.multi_index[2], it.multi_index[0], it.multi_index[1], it.multi_index[2], it.multi_index[3], it.multi_index[4]] = 1
+        return result 
 
     @staticmethod
     def get_action_space(budget_A, budget_B):
@@ -126,14 +192,14 @@ class Alesia():
             raise Exception('step() used before calling reset()')
         action_space = Alesia.get_action_space(self.state[1], self.state[2])
         if not action_A in action_space[0] :
-            action_A = None
+            action_A = 0
         if not action_B in action_space[1]:
-            action_B = None
+            action_B = 0
 
         done = Alesia.check_termination(self.state[0], self.token_space, self.state[1], self.state[2])
         self.terminate = done
 
-        reward = Alesia.get_reward(self.state[0], self.state[1], self.state[2], action_A, action_B, self.token_space)
+        reward, _ = Alesia.get_reward(self.state[0], self.state[1], self.state[2], action_A, action_B, self.token_space)
 
         if not done:
             token_budget_state_space = Alesia.get_state_transition(self.token_space, self.budget, self.state[0], self.state[1], self.state[2], action_A, action_B)
@@ -163,7 +229,7 @@ class Alesia():
             curr_sampled_action_B = np.random.choice(action_space[1], size = 1)[0]
             token_budget_state_space = Alesia.get_state_transition(self.token_space, self.budget, curr_sampled_token_pos, curr_sampled_budget_A, curr_sampled_budget_B, curr_sampled_action_A, curr_sampled_action_B)
             curr_sampled_to_state = Alesia.state_sampler(1, self.token_space, self.budget, token_budget_state_space)[0]
-            curr_sampled_reward = Alesia.get_reward(curr_sampled_token_pos, curr_sampled_budget_A, curr_sampled_budget_B, curr_sampled_action_A, curr_sampled_action_B, self.token_space)
+            curr_sampled_reward, _ = Alesia.get_reward(curr_sampled_token_pos, curr_sampled_budget_A, curr_sampled_budget_B, curr_sampled_action_A, curr_sampled_action_B, self.token_space)
             sample = pd.DataFrame([[curr_sampled_token_pos, curr_sampled_budget_A, curr_sampled_budget_B, curr_sampled_action_A, curr_sampled_action_B, curr_sampled_to_state[0], curr_sampled_to_state[1], curr_sampled_to_state[2], curr_sampled_reward]], columns = ["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B", "to_token_pos", "to_budget_A", "to_budget_B", "reward"])
             sampled_data = pd.concat([sampled_data, sample], axis = 0)
         return sampled_data        
@@ -172,7 +238,7 @@ class Alesia():
 class Agent():
 
 
-    def __init__(self, game_env, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A=None, estimate_prob_transition = "logistic", initial_w = None):
+    def __init__(self, game_env, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q = None, initial_policy_A=None, estimate_prob_transition = "logistic", initial_w = None):
         self.game_env = game_env
         self.gamma = gamma
         self.num_iter_k = num_iter_k
@@ -197,17 +263,36 @@ class Agent():
             self.policy_A = initial_policy_A
 
         ## 2 dimension arrau in order of (token_pos * budget_A * budget_B = dimension_of_to_states, #(token_pos, budget_A, budget_B, action_A, action_B) = 5)
-        if estimate_prob_transition == "value" and initial_w is None:
-            initial_w = np.full(((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1), 5), -np.Inf)
+        if estimate_prob_transition == "value" and initial_w is None:            
+            from_token_pos = np.arange(game_env.token_space + 2)
+            from_budget_A = np.arange(game_env.budget + 1)
+            from_budget_B = np.arange(game_env.budget + 1)
+            action_A = np.arange(game_env.budget + 1)
+            action_B = np.arange(game_env.budget + 1)
+            synthetic_from_data = pd.MultiIndex.from_product([from_token_pos, from_budget_A, from_budget_B, action_A, action_B], names = ["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B"]).to_frame()
+            synthetic_to_data = np.repeat(np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)), (game_env.budget + 1) * (game_env.budget + 1))
+
+            trained_model = linear_model.LogisticRegression(multi_class = "multinomial", fit_intercept = False, solver = "lbfgs", max_iter = 5000).fit(synthetic_from_data, synthetic_to_data)
+            self.w = trained_model.coef_
         else:
             self.w = initial_w
+        self.estimate_prob_transition = estimate_prob_transition
 
         ## 6 dimension array in order of (action_B, from_token_pos, from_budget_A, from_budget_B)
-        self.policy_B = None
+        self.policy_B = self.policy_A
+        self.optimal_policy_A = self.policy_A
+        self.optimal_policy_B = self.policy_B
         ## 5 dimension array in order of (token_pos, budget_A, budget_B, action_A, action_B)
-        self.q_function = initial_q
+        if initial_q is None:
+            self.q_function = np.zeros((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
+            self.q_function[0, ...] = -5
+            self.q_function[-1, ...] = 5
+        else:
+            self.q_function = initial_q
+        self.optimal_q_function = self.q_function
         ## 3 dimension array in order of (token_pos, budget_A, budget_B)
-        self.value_function = None
+        self.value_function = Agent.estimate_value_function_from_q_function(self.q_function, self.policy_A, self.policy_B)
+        self.optimal_value_function = Agent.estimate_value_function_from_q_function(self.optimal_q_function, self.optimal_policy_A, self.optimal_policy_B)
 
 
     @staticmethod
@@ -244,12 +329,12 @@ class Agent():
                         
             total_costs = 0
             for i in range(0, len(to_states.index)):
-                state_action_pair = from_state_action_pair.iloc[i]
-                to_state = to_states.iloc[i]
-                all_state_linear_predictor = np.apply_over_axes(lambda x: np.dot(x, state_action_pair), w, list(w.shape)[1:]).flatten()
-                all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_prob))
+                state_action_pair = from_state_action_pair.iloc[i].to_numpy()
+                to_state = to_states.iloc[i].to_numpy()
+                all_state_linear_predictor = np.apply_along_axis(lambda x: np.dot(x, state_action_pair), 1, w)
+                all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_linear_predictor))
                 expected_value_function = np.dot(all_state_prob, estimated_value_function.flatten())
-                actual_value_function = estimated_value_function[to_state]
+                actual_value_function = estimated_value_function[to_state[0], to_state[1], to_state[2]]
                 total_costs += (expected_value_function - actual_value_function) ** 2
             total_costs = total_costs / len(to_states.index)
             return total_costs
@@ -261,26 +346,27 @@ class Agent():
             
             change = np.zeros(((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1), 5))
             for i in range(0, len(to_states.index)):
-                state_action_pair = from_state_action_pair.iloc[i]
-                to_state = to_states.iloc[i]
-                to_state_idx = np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))[to_state]
+                state_action_pair = from_state_action_pair.iloc[i].to_numpy()
+                to_state = to_states.iloc[i].to_numpy()
+                to_state_idx = np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))[to_state[0], to_state[1], to_state[2]]
 
-                all_state_linear_predictor = np.apply_over_axes(lambda x: np.dot(x, state_action_pair), w, list(w.shape)[1:]).flatten()
+                all_state_linear_predictor = np.apply_along_axis(lambda x: np.dot(x, state_action_pair), 1, w).flatten()
                 
                 ## Vector of shape (token_pos * budget_A * budget_B,)
-                all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_prob))
+                all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_linear_predictor))
                 
                 ## Number
                 expected_value_function = np.dot(all_state_prob, estimated_value_function.flatten())
                 ## Number
-                actual_value_function = estimated_value_function[to_state]
+                actual_value_function = estimated_value_function[to_state[0], to_state[1], to_state[2]]
 
-                cov_estimated_actual = np.sum(np.dot(np.multiply(all_state_prob, estimated_value_function.flatten()).reshape(-1, 1), state_action_pair.reshape(1, -1)), axis = 0) - expected_value_function * np.sum(np.dot(all_state_prob, state_action_pair.reshape(1, -1)), axis = 0)
-                change[to_state_idx, ...] += (expected_value_function - actual_value_function) * cov_estimated_actual
-            return change
+                cov_estimated_actual = np.sum(np.dot(np.multiply(all_state_prob, estimated_value_function.flatten()).reshape(-1, 1), state_action_pair.reshape(1, -1)), axis = 0) - expected_value_function * np.sum(np.dot(all_state_prob.reshape(-1, 1), state_action_pair.reshape(1, -1)), axis = 0)
+                change[to_state_idx, :] = change[to_state_idx, :] + (expected_value_function - actual_value_function) * cov_estimated_actual
+            change = 2 * change / len(to_states.index)
+            return change.flatten()
 
-        new_w = sp.optimize.minimize(cost_func, prev_w, method = "BFGS", jac = cost_func_jac).x
-        
+        optimization_result = sp.optimize.minimize(cost_func, prev_w.flatten(), method = "CG", jac = cost_func_jac)
+        new_w = optimization_result.x.reshape(((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1), 5))
 
         ## 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
         estimated_transition_dist = np.zeros((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
@@ -289,12 +375,11 @@ class Agent():
         it = np.nditer(from_state_action_idx, flags = ["multi_index"], op_flags = ["readwrite"])
         for _ in tqdm.tqdm(it, total = from_state_action_idx.size):
             state_action_pair = np.array(list(it.multi_index))
-            all_state_linear_predictor = np.apply_over_axes(lambda x: np.dot(x, state_action_pair), new_w, list(new_w.shape)[1:]).flatten()
-            all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_prob))
-            estimated_transition_dist[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :, :, it.multi_index[3], it.multi_index[4]] = all_state_prob
+            all_state_linear_predictor = np.apply_along_axis(lambda x: np.dot(x, state_action_pair), 1, new_w).flatten()
+            all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_linear_predictor))
+            estimated_transition_dist[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :, :, it.multi_index[3], it.multi_index[4]] = all_state_prob.reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))
         
         return estimated_transition_dist, new_w
-
 
 
     @staticmethod
@@ -339,8 +424,8 @@ class Agent():
         tolerance = 0.001
         curr_iter = 1
 
-        pbar = tqdm.tqdm(total = num_iter_q)
-        while (l2_change > tolerance) or (curr_iter < num_iter_q):
+        pbar = tqdm.tqdm(total = num_iter_q, initial = 1)
+        while (l2_change > tolerance) and (curr_iter < num_iter_q):
             ##  Q function :(token_pos, budget_A, budget_B, action_A, action_B)
             ##  policy A : (action_A, token_pos, budget_A, budget_B)
             ## mod_policy_A : (token_pos, budget_A, budget_B, action_A, 1)
@@ -383,35 +468,36 @@ class Agent():
 
 
     @staticmethod
-    def find_optimal_policies(estimated_q_function, game_env):
+    def find_optimal_policies(estimated_q_function, game_env, num_cores = 8):
         print("Finding min-max equilibrium policy...")
         ## Q function :(token_pos, budget_A, budget_B, action_A, action_B)
         ## Policy A is 4 dimension (action_A, from_token_pos, from_budget_A, from_budget_B), policy A minimizes target
         ## Policy B is 4 dimension (action_B, from_token_pos, from_budget_A, from_budget_B), policy B maximizes target
 
+
         policy_A = np.zeros((game_env.budget + 1) * (game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.budget + 1, game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))
         policy_B = np.zeros((game_env.budget + 1) * (game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.budget + 1, game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))
         
-        from_state_idx = policy_A[0, ...]
-        it = np.nditer(from_state_idx, flags = ["multi_index"], op_flags = ["readwrite"])
-        for _ in tqdm.tqdm(it, total = from_state_idx.size):
-            ## Row player: policy A, minimizer, Column player: policy B, maximizer
-            matrixGame = nash.Game(estimated_q_function[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :])
-            equilibriums = matrixGame.support_enumeration()
-            max_entropy = -np.inf
-            for eqs in equilibriums:
-                curr_policy_A = eqs[0]
-                curr_policy_B = eqs[1]
-                curr_entropy = entropy(curr_policy_A) + entropy(curr_policy_B)
-                if max_entropy < curr_entropy:
-                    max_entropy = curr_entropy
-                    policy_A[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = curr_policy_A
-                    policy_B[:, it.multi_index[0], it.multi_index[1], it.multi_index[2]] = curr_policy_B
+        state_space = np.arange(game_env.token_space + 2)
+        action_space_A = np.arange(game_env.budget + 1)
+        action_space_B = np.arange(game_env.budget + 1)
+
+        from_states = pd.MultiIndex.from_product([state_space, action_space_A, action_space_B], names=["token_pos", "budget_A", "budget_B"]).to_frame()
+        
+        with mp.Pool(processes = num_cores) as pool:
+            result = list(pool.map(functools.partial(find_nash_equilibrium, from_states, estimated_q_function), range(len(from_states.index))))
+
+        for i in range(len(from_states.index)):
+            token_pos = from_states.iloc[i, 0]
+            budget_A = from_states.iloc[i, 1]
+            budget_B = from_states.iloc[i, 2]
+            policy_A[:, token_pos, budget_A, budget_B] = result[i][0]
+            policy_B[:, token_pos, budget_A, budget_B] = result[i][1]
         return policy_A, policy_B
 
 
     @staticmethod
-    def sample_from_policy(policy_A, policy_B, game_env):
+    def sample_from_policy(policy_A, policy_B, game_env, max_try=10):
         curr_token_pos = game_env.state[0]
         curr_budget_A = game_env.state[1]
         curr_budget_B = game_env.state[2]
@@ -428,16 +514,23 @@ class Agent():
             sample_action_B_success = False
 
         curr_sampled_action_A = 0
-        while not sample_action_A_success:
+        try_time = 0
+        while not sample_action_A_success and try_time < max_try:
             curr_sampled_action_A = np.random.choice(np.arange(game_env.budget + 1), size = 1, p = policy_A[:, curr_token_pos, curr_budget_A, curr_budget_B])[0]
             if curr_sampled_action_A in curr_action_space[0]:
                 sample_action_A_success = True
+            try_time += 1   
+        if not sample_action_A_success:
+            curr_sampled_action_A = np.random.choice(curr_action_space[0][1:], 1)             
         
         curr_sampled_action_B = 0
-        while not sample_action_B_success:
+        try_time = 0
+        while not sample_action_B_success and try_time < max_try:
             curr_sampled_action_B = np.random.choice(np.arange(game_env.budget + 1), size = 1, p = policy_B[:, curr_token_pos, curr_budget_A, curr_budget_B])[0]
             if curr_sampled_action_B in curr_action_space[1]:
                 sample_action_B_success = True
+        if not sample_action_B_success:
+            curr_sampled_action_B = np.random.choice(curr_action_space[1][1:], 1) 
         return curr_sampled_action_A, curr_sampled_action_B
         
     
@@ -452,20 +545,30 @@ class Agent():
             ## Estimate reward function
             self.estimated_reward_function = Agent.estimate_reward_distribution(training_set, self.game_env)
             ## Estimate transition probability
-            self.estimated_transition_function = Agent.estimate_transition_distribution(training_set, self.value_function, self.game_env)
+            if self.estimate_prob_transition == "logistic":
+                self.estimated_transition_function = Agent.estimate_transition_distribution_logistic(training_set, self.value_function, self.game_env)
+            else:
+                self.estimated_transition_function, self.w = Agent.estimate_transition_distribution_value(training_set, self.value_function, self.game_env, self.w)
 
             ## Estimate Value function and Q function
             self.q_function = Agent.estimate_q_function(self.q_function, self.estimated_reward_function, self.estimated_transition_function, self.policy_A, self.num_iter_q, self.gamma)
+            self.optimal_q_function = Agent.estimate_q_function(self.optimal_q_function, self.game_env.expected_reward, self.game_env.state_transition_dist, self.optimal_policy_A, self.num_iter_q, self.gamma)
 
             self.policy_A, self.policy_B = Agent.find_optimal_policies(self.q_function, self.game_env)
+            self.optimal_policy_A, self.optimal_policy_B = Agent.find_optimal_policies(self.optimal_q_function, self.game_env)
 
             self.value_function = Agent.estimate_value_function_from_q_function(self.q_function, self.policy_A, self.policy_B)
+            self.optimal_value_function = Agent.estimate_value_function_from_q_function(self.optimal_q_function, self.optimal_policy_A, self.optimal_policy_B)
 
         action_A, action_B = Agent.sample_from_policy(self.policy_A, self.policy_B, self.game_env)
         return action_A, action_B
+
+    @staticmethod
+    def find_error_upperbound():
+        pass
         
 
-def run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A):
+def run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q=None, initial_policy_A=None, estimate_prob_transition="logistic", initial_w=None):
     np.random.seed(0) 
 
     states = []
@@ -476,7 +579,7 @@ def run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_ite
     env = Alesia(budget, token_space)
     env.reset()
 
-    agent = Agent(env, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A)
+    agent = Agent(env, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A, estimate_prob_transition, initial_w)
 
 
     terminate = False
@@ -497,7 +600,9 @@ gamma = 0.5
 num_iter_k = 10
 num_sample_n = 7 * 7 * 7 * 10
 num_iter_q = 500
-initial_q = np.zeros((token_space + 2, budget + 1, budget + 1, budget + 1, budget + 1))
+initial_q = None
 initial_policy_A = None
 
-states, rewards = run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A)
+estimate_transition_distribution = "value"
+initial_w = None
+states, rewards = run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A, estimate_transition_distribution, initial_w)
