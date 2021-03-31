@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import nashpy as nash
 import numpy as np
 import pandas as pd
+import scipy as sp
 import tqdm
 from scipy.stats import entropy
 from sklearn import linear_model
@@ -171,7 +172,7 @@ class Alesia():
 class Agent():
 
 
-    def __init__(self, game_env, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A=None):
+    def __init__(self, game_env, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A=None, estimate_prob_transition = "logistic", initial_w = None):
         self.game_env = game_env
         self.gamma = gamma
         self.num_iter_k = num_iter_k
@@ -194,6 +195,12 @@ class Agent():
                     self.policy_A[action[0][0], :, curr_budget_A, curr_budget_B] = 1
         else:
             self.policy_A = initial_policy_A
+
+        ## 2 dimension arrau in order of (token_pos * budget_A * budget_B = dimension_of_to_states, #(token_pos, budget_A, budget_B, action_A, action_B) = 5)
+        if estimate_prob_transition == "value" and initial_w is None:
+            initial_w = np.full(((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1), 5), -np.Inf)
+        else:
+            self.w = initial_w
 
         ## 6 dimension array in order of (action_B, from_token_pos, from_budget_A, from_budget_B)
         self.policy_B = None
@@ -222,7 +229,76 @@ class Agent():
 
 
     @staticmethod
-    def estimate_transition_distribution(training_set, estimated_value_function, game_env):   
+    def estimate_transition_distribution_value(training_set, estimated_value_function, game_env, prev_w):   
+        ## estimated_value_function is (token_pos * budget_A * budget_B)
+
+        print("Estimating transition value distribution...")
+        from_state_action_pair = training_set[["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B"]]
+        to_states = training_set[["to_token_pos", "to_budget_A", "to_budget_B"]]
+
+        def cost_func(w):
+            
+            ## We need to flatten everything to speed things up
+            ## w is (token_pos * budget_A * budget_B = dimension_of_to_states, #(token_pos, budget_A, budget_B, action_A, action_B) = 5)
+            w = w.reshape(((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1), 5))
+                        
+            total_costs = 0
+            for i in range(0, len(to_states.index)):
+                state_action_pair = from_state_action_pair.iloc[i]
+                to_state = to_states.iloc[i]
+                all_state_linear_predictor = np.apply_over_axes(lambda x: np.dot(x, state_action_pair), w, list(w.shape)[1:]).flatten()
+                all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_prob))
+                expected_value_function = np.dot(all_state_prob, estimated_value_function.flatten())
+                actual_value_function = estimated_value_function[to_state]
+                total_costs += (expected_value_function - actual_value_function) ** 2
+            total_costs = total_costs / len(to_states.index)
+            return total_costs
+
+        def cost_func_jac(w):
+            ## We need to flatten everything to speed things up
+            ## w is (token_pos * budget_A * budget_B = dimension_of_to_states, #(token_pos, budget_A, budget_B, action_A, action_B) = 5)
+            w = w.reshape(((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1), 5))
+            
+            change = np.zeros(((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1), 5))
+            for i in range(0, len(to_states.index)):
+                state_action_pair = from_state_action_pair.iloc[i]
+                to_state = to_states.iloc[i]
+                to_state_idx = np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))[to_state]
+
+                all_state_linear_predictor = np.apply_over_axes(lambda x: np.dot(x, state_action_pair), w, list(w.shape)[1:]).flatten()
+                
+                ## Vector of shape (token_pos * budget_A * budget_B,)
+                all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_prob))
+                
+                ## Number
+                expected_value_function = np.dot(all_state_prob, estimated_value_function.flatten())
+                ## Number
+                actual_value_function = estimated_value_function[to_state]
+
+                cov_estimated_actual = np.sum(np.dot(np.multiply(all_state_prob, estimated_value_function.flatten()).reshape(-1, 1), state_action_pair.reshape(1, -1)), axis = 0) - expected_value_function * np.sum(np.dot(all_state_prob, state_action_pair.reshape(1, -1)), axis = 0)
+                change[to_state_idx, ...] += (expected_value_function - actual_value_function) * cov_estimated_actual
+            return change
+
+        new_w = sp.optimize.minimize(cost_func, prev_w, method = "BFGS", jac = cost_func_jac).x
+        
+
+        ## 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
+        estimated_transition_dist = np.zeros((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
+
+        from_state_action_idx = estimated_transition_dist[:, :, :, 0, 0, 0, :, :]
+        it = np.nditer(from_state_action_idx, flags = ["multi_index"], op_flags = ["readwrite"])
+        for _ in tqdm.tqdm(it, total = from_state_action_idx.size):
+            state_action_pair = np.array(list(it.multi_index))
+            all_state_linear_predictor = np.apply_over_axes(lambda x: np.dot(x, state_action_pair), new_w, list(new_w.shape)[1:]).flatten()
+            all_state_prob = np.exp(all_state_linear_predictor - sp.special.logsumexp(all_state_prob))
+            estimated_transition_dist[it.multi_index[0], it.multi_index[1], it.multi_index[2], :, :, :, it.multi_index[3], it.multi_index[4]] = all_state_prob
+        
+        return estimated_transition_dist, new_w
+
+
+
+    @staticmethod
+    def estimate_transition_distribution_logistic(training_set, estimated_value_function, game_env):   
         print("Estimating transition distribution...")
         from_state_action_pair = training_set[["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B"]]
         to_states = training_set[["to_token_pos", "to_budget_A", "to_budget_B"]]
@@ -238,7 +314,7 @@ class Agent():
 
         trained_model = linear_model.LogisticRegression(multi_class = "multinomial", solver = "lbfgs", max_iter = 5000).fit(from_state_action_pair, to_states_index)
 
-         ## 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
+        ## 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
         estimated_transition_dist = np.zeros((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
 
         from_state_action_idx = estimated_transition_dist[:, :, :, 0, 0, 0, :, :]
