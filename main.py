@@ -532,6 +532,11 @@ class Agent():
         if not sample_action_B_success:
             curr_sampled_action_B = np.random.choice(curr_action_space[1][1:], 1) 
         return curr_sampled_action_A, curr_sampled_action_B
+    
+
+    @staticmethod
+    def find_error_upperbound(estimated_q_function, optimal_q_function, ):
+        pass
         
     
     def make_action(self):
@@ -562,10 +567,6 @@ class Agent():
 
         action_A, action_B = Agent.sample_from_policy(self.policy_A, self.policy_B, self.game_env)
         return action_A, action_B
-
-    @staticmethod
-    def find_error_upperbound():
-        pass
         
 
 def run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q=None, initial_policy_A=None, estimate_prob_transition="logistic", initial_w=None):
