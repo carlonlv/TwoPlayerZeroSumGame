@@ -1,8 +1,9 @@
+import functools
 import itertools
 import math
 import multiprocessing as mp
+import pickle
 import time
-import functools
 
 import matplotlib.pyplot as plt
 import nashpy as nash
@@ -43,12 +44,14 @@ class Alesia():
         # A tuple (token_pos, budget_A, budget_B)
         # token_pos can go from 0 to token_space + 1. 
         # budget_A and budget_B can go from 0 to budget
-        self.state = None
+        self.state = (math.floor(self.token_space / 2) , self.budget, self.budget)
 
         self.t = 0
 
         self.state_transition_dist = self.get_state_transition_dist()
         self.expected_reward = self.get_expected_reward()
+        self.initial_state_dist = np.zeros((self.token_space + 2, self.budget + 1, self.budget + 1))
+        self.initial_state_dist[self.state[0], self.state[1], self.state[2]] = 1
 
     def reset(self):
         # Full budget for player A and B, token_space is set to be the middle
@@ -262,6 +265,13 @@ class Agent():
         else:
             self.policy_A = initial_policy_A
 
+        ## 6 dimension array in order of (action_B, from_token_pos, from_budget_A, from_budget_B)
+        self.policy_B = self.policy_A
+        self.initial_policy_A = self.policy_A
+        self.initial_policy_B = self.policy_B
+        self.optimal_policy_A = self.policy_A
+        self.optimal_policy_B = self.policy_B
+
         ## 2 dimension arrau in order of (token_pos * budget_A * budget_B = dimension_of_to_states, #(token_pos, budget_A, budget_B, action_A, action_B) = 5)
         if estimate_prob_transition == "value" and initial_w is None:            
             from_token_pos = np.arange(game_env.token_space + 2)
@@ -278,15 +288,11 @@ class Agent():
             self.w = initial_w
         self.estimate_prob_transition = estimate_prob_transition
 
-        ## 6 dimension array in order of (action_B, from_token_pos, from_budget_A, from_budget_B)
-        self.policy_B = self.policy_A
-        self.optimal_policy_A = self.policy_A
-        self.optimal_policy_B = self.policy_B
         ## 5 dimension array in order of (token_pos, budget_A, budget_B, action_A, action_B)
         if initial_q is None:
             self.q_function = np.zeros((game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1, game_env.budget + 1))
-            self.q_function[0, ...] = -5
-            self.q_function[-1, ...] = 5
+            self.q_function[0, ...] = -1
+            self.q_function[-1, ...] = 1
         else:
             self.q_function = initial_q
         self.optimal_q_function = self.q_function
@@ -419,13 +425,10 @@ class Agent():
     def estimate_q_function(q_0, estimated_reward_function, estimated_transition_function, policy_A, num_iter_q, gamma):
         print("Estimating Q function...")
         curr_q = q_0
-        l2_change = np.Inf
-
-        tolerance = 0.001
         curr_iter = 1
 
         pbar = tqdm.tqdm(total = num_iter_q, initial = 1)
-        while (l2_change > tolerance) and (curr_iter < num_iter_q):
+        while curr_iter < num_iter_q:
             ##  Q function :(token_pos, budget_A, budget_B, action_A, action_B)
             ##  policy A : (action_A, token_pos, budget_A, budget_B)
             ## mod_policy_A : (token_pos, budget_A, budget_B, action_A, 1)
@@ -441,7 +444,6 @@ class Agent():
             mod_value_func = value_func[:, :, :, np.newaxis, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
             new_q = estimated_reward_function + gamma * np.sum(np.multiply(estimated_transition_function, mod_value_func), axis = (3, 4, 5))
 
-            l2_change = np.linalg.norm(new_q - curr_q)
             curr_q = new_q
             curr_iter = curr_iter + 1
             pbar.update(1)
@@ -532,15 +534,17 @@ class Agent():
         if not sample_action_B_success:
             curr_sampled_action_B = np.random.choice(curr_action_space[1][1:], 1) 
         return curr_sampled_action_A, curr_sampled_action_B
-    
-
-    @staticmethod
-    def find_error_upperbound(estimated_q_function, optimal_q_function, ):
-        pass
         
-    
+
     def make_action(self):
         ## This is the main function
+        recorded_q_functions = []
+        recorded_optimal_q_function = self.q_function
+        recorded_policy_A = []
+        recorded_policy_B = []
+        recorded_estimated_transition_matrix = []
+        recorded_estimated_reward_function = []
+
         for k in range(0, self.num_iter_k):
             print("Number of iteration: " + str(k))
 
@@ -549,27 +553,79 @@ class Agent():
 
             ## Estimate reward function
             self.estimated_reward_function = Agent.estimate_reward_distribution(training_set, self.game_env)
+            recorded_estimated_reward_function.append(self.estimated_reward_function)
             ## Estimate transition probability
             if self.estimate_prob_transition == "logistic":
                 self.estimated_transition_function = Agent.estimate_transition_distribution_logistic(training_set, self.value_function, self.game_env)
             else:
                 self.estimated_transition_function, self.w = Agent.estimate_transition_distribution_value(training_set, self.value_function, self.game_env, self.w)
+            recorded_estimated_transition_matrix.append(self.estimated_transition_function)
 
             ## Estimate Value function and Q function
             self.q_function = Agent.estimate_q_function(self.q_function, self.estimated_reward_function, self.estimated_transition_function, self.policy_A, self.num_iter_q, self.gamma)
+            recorded_q_functions.append(self.q_function)
             self.optimal_q_function = Agent.estimate_q_function(self.optimal_q_function, self.game_env.expected_reward, self.game_env.state_transition_dist, self.optimal_policy_A, self.num_iter_q, self.gamma)
+            recorded_optimal_q_function = self.optimal_q_function
 
             self.policy_A, self.policy_B = Agent.find_optimal_policies(self.q_function, self.game_env)
+            recorded_policy_A.append(self.policy_A)
+            recorded_policy_B.append(self.policy_B)
             self.optimal_policy_A, self.optimal_policy_B = Agent.find_optimal_policies(self.optimal_q_function, self.game_env)
 
             self.value_function = Agent.estimate_value_function_from_q_function(self.q_function, self.policy_A, self.policy_B)
             self.optimal_value_function = Agent.estimate_value_function_from_q_function(self.optimal_q_function, self.optimal_policy_A, self.optimal_policy_B)
 
         action_A, action_B = Agent.sample_from_policy(self.policy_A, self.policy_B, self.game_env)
+
+        record = {"timestamp" : self.game_env.t, "recorded_q_functions" : recorded_q_functions, "recorded_optimal_q_function" : recorded_optimal_q_function, "recorded_policy_A" : recorded_policy_A, "recorded_policy_B" : recorded_policy_B, "recorded_estimated_transition_matrix" : recorded_estimated_transition_matrix, "recorded_estimated_reward_function" : recorded_estimated_reward_function}
+        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(self.game_env.t) + ".pkl") as f:
+            pickle.dump(record, f)
         return action_A, action_B
+
+
+def apply_bellman_equation(num_iter_q, gamma, estimated_reward_function, estimated_transition_function, estimated_q_function, policy_A, policy_B): 
+            curr_q = estimated_q_function
+            for _ in range(num_iter_q):
+                curr_value_func = Agent.estimate_value_function_from_q_function(curr_q, policy_A, policy_B)
+                mod_value_func = curr_value_func[:, :, :, np.newaxis, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+                curr_q = estimated_reward_function + gamma * np.sum(np.multiply(estimated_transition_function, mod_value_func), axis = (3, 4, 5))
+            return curr_q
+
+
+def find_errors(estimated_q_function_k, estimated_q_function_kp1, policy_A_k, policy_B_k, gamma, estimated_transition_function_kp1, transition_distribution, estimated_reward_function_k, num_iter_q):            
+        epsilon_k = apply_bellman_equation(num_iter_q, gamma, estimated_reward_function_k, estimated_transition_function_kp1, estimated_q_function_k, policy_A_k, policy_B_k) - estimated_q_function_kp1
+        epsilon_k_l2_norm = np.sqrt(np.sum(np.power(epsilon_k, 2)))
+
+        S_k = apply_bellman_equation(num_iter_q, gamma, estimated_reward_function_k, estimated_transition_function_kp1, estimated_q_function_k, policy_A_k, policy_B_k) - apply_bellman_equation(num_iter_q, gamma, estimated_reward_function_k, transition_distribution, estimated_q_function_k, policy_A_k, policy_B_k)
+        S_k_l2_norm = np.sqrt(np.sum(np.power(S_k, 2)))
+        return epsilon_k_l2_norm, S_k_l2_norm
+
+
+def find_error_weighted_norm(estimated_q_function_k, optimal_q_function, initial_state_dist, initial_policy_A, initial_policy_B):
+    ## initial_state_dist: (token_pos, budget_A, budget_B)
+    ## initial_policy_A: (action_A, token_pos, budget_A, budget_B)
+    ## initial_policy_B: (action_B, token_pos, budget_A, budget_B)
+    ## initial_state_action_dist : (token_pos, budget_A, budget_B, action_A, action_B)
+    initial_state_action_dist = np.zeros(estimated_q_function_k.shape)
+    with np.nditer(initial_state_dist, flags = ["multi_index"], op_flags = ["readwrite"]) as it:
+        for _ in it:
+            curr_token_pos = it.multi_index[0]
+            curr_budget_A = it.multi_index[1]
+            curr_budget_B = it.multi_index[2]
+            cond_policy_A = initial_policy_A[:, curr_token_pos, curr_budget_A, curr_budget_B]
+            cond_policy_B = initial_policy_B[:, curr_token_pos, curr_budget_A, curr_budget_B]
+            initial_state_action_dist[curr_token_pos, curr_budget_A, curr_budget_B, :, :] = np.outer(cond_policy_A, cond_policy_B)
+    
+    weighted_l1_diff_q_func = np.sum(np.multiply(np.abs(optimal_q_function - estimated_q_function_k), initial_state_action_dist))
+    return weighted_l1_diff_q_func
+
+
+def find_error_upper_bound(gamma, c_bar, epsilon_k_l2_norms, S_k_l2_norms, num_iter_k, num_iter_q, Rmax):
+    upper_bound =  (2 * gamma / ((1 - gamma) ** 2)) * (c_bar * np.max(np.array(epsilon_k_l2_norms) + np.array(S_k_l2_norms)) + 2 * (gamma ** (num_iter_k * num_iter_q)) * Rmax)
+    return upper_bound
         
 
-def run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q=None, initial_policy_A=None, estimate_prob_transition="logistic", initial_w=None):
+def run_experiment(budget, token_space, max_time, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q=None, initial_policy_A=None, estimate_prob_transition="logistic", initial_w=None):
     np.random.seed(0) 
 
     states = []
@@ -582,28 +638,59 @@ def run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_ite
 
     agent = Agent(env, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A, estimate_prob_transition, initial_w)
 
-
     terminate = False
     while not terminate:
         action_A, action_B = agent.make_action()
 
         terminate, reward, state, _ = env.step(action_A, action_B)
+        if env.t > max_time:
+            terminate = True
 
         states.append(state)
         rewards.append(reward)
         actions.append((action_A, action_B))
+    
+    lhs_l1_norm = []
+    rhs_upper_bound = []
+    for t in range(1, min(env.t, max_time)):
+        epsilon_k_l2_norms = []
+        S_k_l2_norms = []
+        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(t) + ".pkl") as f:
+            record = pickle.load(f)
+        recorded_q_functions = record["recorded_q_functions"]
+        recorded_policy_A = ["recorded_policy_A"]
+        recorded_policy_B = ["recorded_policy_B"]
+        recorded_estimated_transition_matrix = ["recorded_estimated_transition_matrix"]
+        recorded_estimated_reward_function = ["recorded_estimated_reward_function"]
+        for k in range(0, num_iter_k - 1):
+            estimated_q_function_k = recorded_q_functions[k]
+            estimated_q_function_kp1 = recorded_q_functions[k + 1]
+            policy_A_k = recorded_policy_A[k]
+            policy_B_k = recorded_policy_B[k]
+            estimated_transition_function_kp1 = recorded_estimated_transition_matrix[k + 1]
+            transition_distribution = env.state_transition_dist
+            estimated_reward_function_k = recorded_estimated_reward_function[k]
+            epsilon_k_l2_norm, S_k_l2_norm = find_errors(estimated_q_function_k, estimated_q_function_kp1, policy_A_k, policy_B_k, gamma, estimated_transition_function_kp1, transition_distribution, estimated_reward_function_k, num_iter_q)
+            epsilon_k_l2_norms.append(epsilon_k_l2_norm)
+            S_k_l2_norms.append(S_k_l2_norm)
+        lhs = find_error_weighted_norm(recorded_q_functions[num_iter_k - 1], agent.optimal_q_function, env.initial_state_dist, agent.initial_policy_A, agent.initial_policy_B)
+        rhs = find_error_upper_bound(gamma, 3, epsilon_k_l2_norms, S_k_l2_norms, num_iter_k, num_iter_q, 1)
+        lhs_l1_norm.append(lhs)
+        rhs_upper_bound.append(rhs)
+    
     return states, rewards
 
 
 budget = 6
 token_space = 5
 gamma = 0.5
-num_iter_k = 10
-num_sample_n = 7 * 7 * 7 * 10
-num_iter_q = 500
+num_iter_k = 5
+num_sample_n = 7 * 7 * 7 * 20
+num_iter_q = 25
 initial_q = None
 initial_policy_A = None
+max_time = 3
 
 estimate_transition_distribution = "value"
 initial_w = None
-states, rewards = run_experiment(budget, token_space, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A, estimate_transition_distribution, initial_w)
+states, rewards = run_experiment(budget, token_space, max_time, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A, estimate_transition_distribution, initial_w)
