@@ -16,23 +16,23 @@ from sklearn import linear_model
 
 
 def find_nash_equilibrium(from_states, estimated_q_function, row_num):
-            token_pos = from_states.iloc[row_num, 0]
-            budget_A = from_states.iloc[row_num, 1]
-            budget_B = from_states.iloc[row_num, 2]
-            matrixGame = nash.Game(estimated_q_function[token_pos, budget_A, budget_B, :, :])
-            equilibriums = matrixGame.support_enumeration(non_degenerate = False, tol = 0)
-            max_entropy = -np.inf
-            policy_A = None
-            policy_B = None
-            for eqs in equilibriums:
-                curr_policy_B = eqs[0]
-                curr_policy_A = eqs[1]
-                curr_entropy = entropy(curr_policy_A) + entropy(curr_policy_B)
-                if max_entropy < curr_entropy:
-                    max_entropy = curr_entropy
-                    policy_A = curr_policy_A
-                    policy_B = curr_policy_B
-            return [policy_A, policy_B]
+    token_pos = from_states.iloc[row_num, 0]
+    budget_A = from_states.iloc[row_num, 1]
+    budget_B = from_states.iloc[row_num, 2]
+    matrixGame = nash.Game(estimated_q_function[token_pos, budget_A, budget_B, :, :])
+    equilibriums = matrixGame.support_enumeration(non_degenerate = False, tol = 0)
+    max_entropy = -np.inf
+    policy_A = None
+    policy_B = None
+    for eqs in equilibriums:
+        curr_policy_B = eqs[0]
+        curr_policy_A = eqs[1]
+        curr_entropy = entropy(curr_policy_A) + entropy(curr_policy_B)
+        if max_entropy < curr_entropy:
+            max_entropy = curr_entropy
+            policy_A = curr_policy_A
+            policy_B = curr_policy_B
+    return [policy_A, policy_B]
 
 
 class Alesia():
@@ -485,9 +485,9 @@ class Agent():
         action_space_B = np.arange(game_env.budget + 1)
 
         from_states = pd.MultiIndex.from_product([state_space, action_space_A, action_space_B], names=["token_pos", "budget_A", "budget_B"]).to_frame()
-        
-        with mp.Pool(processes = num_cores) as pool:
-            result = list(pool.map(functools.partial(find_nash_equilibrium, from_states, estimated_q_function), range(len(from_states.index))))
+
+        with mp.Pool(processes = num_cores) as p:
+            result = list(tqdm.tqdm(p.imap(functools.partial(find_nash_equilibrium, from_states, estimated_q_function), range(len(from_states.index))), total = len(from_states.index)))
 
         for i in range(len(from_states.index)):
             token_pos = from_states.iloc[i, 0]
@@ -517,22 +517,22 @@ class Agent():
 
         curr_sampled_action_A = 0
         try_time = 0
-        while not sample_action_A_success and try_time < max_try:
+        while not sample_action_A_success or try_time < max_try:
             curr_sampled_action_A = np.random.choice(np.arange(game_env.budget + 1), size = 1, p = policy_A[:, curr_token_pos, curr_budget_A, curr_budget_B])[0]
             if curr_sampled_action_A in curr_action_space[0]:
                 sample_action_A_success = True
             try_time += 1   
         if not sample_action_A_success:
-            curr_sampled_action_A = np.random.choice(curr_action_space[0][1:], 1)             
+            curr_sampled_action_A = np.random.choice(curr_action_space[0][1:], 1)[0]             
         
         curr_sampled_action_B = 0
         try_time = 0
-        while not sample_action_B_success and try_time < max_try:
+        while not sample_action_B_success or try_time < max_try:
             curr_sampled_action_B = np.random.choice(np.arange(game_env.budget + 1), size = 1, p = policy_B[:, curr_token_pos, curr_budget_A, curr_budget_B])[0]
             if curr_sampled_action_B in curr_action_space[1]:
                 sample_action_B_success = True
         if not sample_action_B_success:
-            curr_sampled_action_B = np.random.choice(curr_action_space[1][1:], 1) 
+            curr_sampled_action_B = np.random.choice(curr_action_space[1][1:], 1)[0] 
         return curr_sampled_action_A, curr_sampled_action_B
         
 
