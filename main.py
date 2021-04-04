@@ -517,7 +517,7 @@ class Agent():
 
         curr_sampled_action_A = 0
         try_time = 0
-        while not sample_action_A_success or try_time < max_try:
+        while (not sample_action_A_success) and (try_time < max_try):
             curr_sampled_action_A = np.random.choice(np.arange(game_env.budget + 1), size = 1, p = policy_A[:, curr_token_pos, curr_budget_A, curr_budget_B])[0]
             if curr_sampled_action_A in curr_action_space[0]:
                 sample_action_A_success = True
@@ -527,10 +527,11 @@ class Agent():
         
         curr_sampled_action_B = 0
         try_time = 0
-        while not sample_action_B_success or try_time < max_try:
+        while (not sample_action_B_success) and (try_time < max_try):
             curr_sampled_action_B = np.random.choice(np.arange(game_env.budget + 1), size = 1, p = policy_B[:, curr_token_pos, curr_budget_A, curr_budget_B])[0]
             if curr_sampled_action_B in curr_action_space[1]:
                 sample_action_B_success = True
+            try_time += 1   
         if not sample_action_B_success:
             curr_sampled_action_B = np.random.choice(curr_action_space[1][1:], 1)[0] 
         return curr_sampled_action_A, curr_sampled_action_B
@@ -539,7 +540,6 @@ class Agent():
     def make_action(self):
         ## This is the main function
         recorded_q_functions = []
-        recorded_optimal_q_function = self.q_function
         recorded_policy_A = []
         recorded_policy_B = []
         recorded_estimated_transition_matrix = []
@@ -565,7 +565,6 @@ class Agent():
             self.q_function = Agent.estimate_q_function(self.q_function, self.estimated_reward_function, self.estimated_transition_function, self.policy_A, self.num_iter_q, self.gamma)
             recorded_q_functions.append(self.q_function)
             self.optimal_q_function = Agent.estimate_q_function(self.optimal_q_function, self.game_env.expected_reward, self.game_env.state_transition_dist, self.optimal_policy_A, self.num_iter_q, self.gamma)
-            recorded_optimal_q_function = self.optimal_q_function
 
             self.policy_A, self.policy_B = Agent.find_optimal_policies(self.q_function, self.game_env)
             recorded_policy_A.append(self.policy_A)
@@ -577,9 +576,9 @@ class Agent():
 
         action_A, action_B = Agent.sample_from_policy(self.policy_A, self.policy_B, self.game_env)
 
-        record = {"timestamp" : self.game_env.t, "recorded_q_functions" : recorded_q_functions, "recorded_optimal_q_function" : recorded_optimal_q_function, "recorded_policy_A" : recorded_policy_A, "recorded_policy_B" : recorded_policy_B, "recorded_estimated_transition_matrix" : recorded_estimated_transition_matrix, "recorded_estimated_reward_function" : recorded_estimated_reward_function}
-        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(self.game_env.t) + ".pkl") as f:
-            pickle.dump(record, f)
+        record = {"timestamp" : self.game_env.t, "recorded_q_functions" : recorded_q_functions, "recorded_policy_A" : recorded_policy_A, "recorded_policy_B" : recorded_policy_B, "recorded_estimated_transition_matrix" : recorded_estimated_transition_matrix, "recorded_estimated_reward_function" : recorded_estimated_reward_function}
+        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(self.game_env.t) + ".pkl", "wb") as f:
+            pickle.dump(record, f,  protocol = pickle.HIGHEST_PROTOCOL)
         return action_A, action_B
 
 
@@ -655,7 +654,7 @@ def run_experiment(budget, token_space, max_time, gamma, num_iter_k, num_sample_
     for t in range(1, min(env.t, max_time)):
         epsilon_k_l2_norms = []
         S_k_l2_norms = []
-        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(t) + ".pkl") as f:
+        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(t) + ".pkl", "rb") as f:
             record = pickle.load(f)
         recorded_q_functions = record["recorded_q_functions"]
         recorded_policy_A = ["recorded_policy_A"]
