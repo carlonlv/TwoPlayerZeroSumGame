@@ -206,7 +206,7 @@ class Alesia():
 
         if not done:
             token_budget_state_space = Alesia.get_state_transition(self.token_space, self.budget, self.state[0], self.state[1], self.state[2], action_A, action_B)
-            self.state = Alesia.state_sampler(1, self.token_space, self.budget, token_budget_state_space)
+            self.state = Alesia.state_sampler(1, self.token_space, self.budget, token_budget_state_space)[0]
 
         self.t = self.t + 1
         return done, reward, self.state, {}
@@ -470,7 +470,7 @@ class Agent():
 
 
     @staticmethod
-    def find_optimal_policies(estimated_q_function, game_env, num_cores = 8):
+    def find_optimal_policies(estimated_q_function, game_env, num_cores = 11):
         print("Finding min-max equilibrium policy...")
         ## Q function :(token_pos, budget_A, budget_B, action_A, action_B)
         ## Policy A is 4 dimension (action_A, from_token_pos, from_budget_A, from_budget_B), policy A minimizes target
@@ -505,15 +505,8 @@ class Agent():
         curr_budget_B = game_env.state[2]
         curr_action_space = Alesia.get_action_space(curr_budget_A, curr_budget_B)
         
-        if len(curr_action_space[0]) == 1 and curr_action_space[0] == 0:
-            sample_action_A_success = True
-        else:
-            sample_action_A_success = False
-        
-        if len(curr_action_space[1]) == 1 and curr_action_space[1] == 0:
-            sample_action_B_success = True
-        else:
-            sample_action_B_success = False
+        sample_action_A_success = False
+        sample_action_B_success = False
 
         curr_sampled_action_A = 0
         try_time = 0
@@ -523,7 +516,7 @@ class Agent():
                 sample_action_A_success = True
             try_time += 1   
         if not sample_action_A_success:
-            curr_sampled_action_A = np.random.choice(curr_action_space[0][1:], 1)[0]             
+            curr_sampled_action_A = np.random.choice(curr_action_space[0], 1)[0]             
         
         curr_sampled_action_B = 0
         try_time = 0
@@ -533,7 +526,7 @@ class Agent():
                 sample_action_B_success = True
             try_time += 1   
         if not sample_action_B_success:
-            curr_sampled_action_B = np.random.choice(curr_action_space[1][1:], 1)[0] 
+            curr_sampled_action_B = np.random.choice(curr_action_space[1], 1)[0] 
         return curr_sampled_action_A, curr_sampled_action_B
         
 
@@ -576,8 +569,8 @@ class Agent():
 
         action_A, action_B = Agent.sample_from_policy(self.policy_A, self.policy_B, self.game_env)
 
-        record = {"timestamp" : self.game_env.t, "recorded_q_functions" : recorded_q_functions, "recorded_policy_A" : recorded_policy_A, "recorded_policy_B" : recorded_policy_B, "recorded_estimated_transition_matrix" : recorded_estimated_transition_matrix, "recorded_estimated_reward_function" : recorded_estimated_reward_function}
-        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(self.game_env.t) + ".pkl", "wb") as f:
+        record = {"timestamp" : self.game_env.t, "recorded_q_functions" : recorded_q_functions, "recorded_policy_A" : recorded_policy_A, "recorded_policy_B" : recorded_policy_B, "recorded_estimated_transition_matrix" : recorded_estimated_transition_matrix, "recorded_estimated_reward_function" : recorded_estimated_reward_function, "state_transition_dist" : self.game_env.state_transition_dist, "initial_state_dist" : self.game_env.initial_state_dist, "initial_policy_A" : self.initial_policy_A, "initial_policy_B": self.initial_policy_B, "optimal_q_function" : self.optimal_q_function}
+        with open("recorded_statistics at time " + str(self.game_env.t) + ".pkl", "wb") as f:
             pickle.dump(record, f,  protocol = pickle.HIGHEST_PROTOCOL)
         return action_A, action_B
 
@@ -651,32 +644,38 @@ def run_experiment(budget, token_space, max_time, gamma, num_iter_k, num_sample_
     
     lhs_l1_norm = []
     rhs_upper_bound = []
-    for t in range(1, min(env.t, max_time)):
+    for t in range(0, min(env.t, max_time)):
         epsilon_k_l2_norms = []
         S_k_l2_norms = []
-        with open("~/Documents/TwoPlayerZeroSumGame/" + "recorded_statistics at time" + str(t) + ".pkl", "rb") as f:
+        with open("recorded_statistics at time " + str(t) + ".pkl", "rb") as f:
             record = pickle.load(f)
         recorded_q_functions = record["recorded_q_functions"]
-        recorded_policy_A = ["recorded_policy_A"]
-        recorded_policy_B = ["recorded_policy_B"]
-        recorded_estimated_transition_matrix = ["recorded_estimated_transition_matrix"]
-        recorded_estimated_reward_function = ["recorded_estimated_reward_function"]
+        recorded_policy_A = record["recorded_policy_A"]
+        recorded_policy_B = record["recorded_policy_B"]
+        recorded_estimated_transition_matrix = record["recorded_estimated_transition_matrix"]
+        recorded_estimated_reward_function = record["recorded_estimated_reward_function"]
+        state_transition_dist = record["state_transition_dist"]
+        initial_state_dist = record["initial_state_dist"]
+        initial_policy_A = record["initial_policy_A"]
+        initial_policy_B = record["initial_policy_B"]
+        optimal_q_function = record["optimal_q_function"]
         for k in range(0, num_iter_k - 1):
             estimated_q_function_k = recorded_q_functions[k]
             estimated_q_function_kp1 = recorded_q_functions[k + 1]
             policy_A_k = recorded_policy_A[k]
             policy_B_k = recorded_policy_B[k]
             estimated_transition_function_kp1 = recorded_estimated_transition_matrix[k + 1]
-            transition_distribution = env.state_transition_dist
             estimated_reward_function_k = recorded_estimated_reward_function[k]
-            epsilon_k_l2_norm, S_k_l2_norm = find_errors(estimated_q_function_k, estimated_q_function_kp1, policy_A_k, policy_B_k, gamma, estimated_transition_function_kp1, transition_distribution, estimated_reward_function_k, num_iter_q)
+            epsilon_k_l2_norm, S_k_l2_norm = find_errors(estimated_q_function_k, estimated_q_function_kp1, policy_A_k, policy_B_k, gamma, estimated_transition_function_kp1, state_transition_dist, estimated_reward_function_k, num_iter_q)
             epsilon_k_l2_norms.append(epsilon_k_l2_norm)
             S_k_l2_norms.append(S_k_l2_norm)
-        lhs = find_error_weighted_norm(recorded_q_functions[num_iter_k - 1], agent.optimal_q_function, env.initial_state_dist, agent.initial_policy_A, agent.initial_policy_B)
+        lhs = find_error_weighted_norm(recorded_q_functions[num_iter_k - 1], optimal_q_function, initial_state_dist, initial_policy_A, initial_policy_B)
         rhs = find_error_upper_bound(gamma, 3, epsilon_k_l2_norms, S_k_l2_norms, num_iter_k, num_iter_q, 1)
         lhs_l1_norm.append(lhs)
         rhs_upper_bound.append(rhs)
     
+    summary_statistics = pd.DataFrame(data = {"t": list(range(0, min(env.t, max_time))), "lhs_l1_norm" : lhs_l1_norm, "rhs_upper_bound" : rhs_upper_bound})
+    summary_statistics.to_csv("recorded_statistics" + ".csv")
     return states, rewards
 
 
@@ -688,7 +687,7 @@ num_sample_n = 7 * 7 * 7 * 20
 num_iter_q = 25
 initial_q = None
 initial_policy_A = None
-max_time = 3
+max_time = 10
 
 estimate_transition_distribution = "value"
 initial_w = None
