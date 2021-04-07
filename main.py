@@ -105,6 +105,7 @@ class Alesia():
                 return np.random.uniform(low = higher_point, high = lower_point, size = 1)[0], 0.5 * (higher_point + lower_point)
 
     def get_expected_reward(self):
+        print("Finding expected reward function...")
         result = np.zeros((self.token_space + 2, self.budget + 1, self.budget + 1, self.budget + 1, self.budget + 1))
         with np.nditer(result, flags = ["multi_index"], op_flags = ["readwrite"]) as it:
             for x in tqdm.tqdm(it, total = result.size):
@@ -254,10 +255,11 @@ class Agent():
         self.estimated_transition_function = None
         ## 4 dimension array in order of (action_A, from_token_pos, from_budget_A, from_budget_B)
         if initial_policy_A is None:
+            print("Initializting policies of A, B...")
             self.policy_A = np.zeros((game_env.budget + 1, game_env.token_space + 2, game_env.budget + 1, game_env.budget + 1))
             from_budget_idx = np.arange((game_env.budget + 1) * (game_env.budget + 1)).reshape((game_env.budget + 1, game_env.budget + 1))
             with np.nditer(from_budget_idx, flags = ["multi_index"], op_flags = ["readwrite"]) as it:
-                for _ in it:
+                for _ in tqdm.tqdm(it, total = from_budget_idx.size):
                     curr_budget_A = it.multi_index[0]
                     curr_budget_B = it.multi_index[1]
                     action = Alesia.get_action_space(curr_budget_A, curr_budget_B)
@@ -273,7 +275,8 @@ class Agent():
         self.optimal_policy_B = self.policy_B
 
         ## 2 dimension arrau in order of (token_pos * budget_A * budget_B = dimension_of_to_states, #(token_pos, budget_A, budget_B, action_A, action_B) = 5)
-        if estimate_prob_transition == "value" and initial_w is None:            
+        if estimate_prob_transition == "value" and initial_w is None:
+            print("Initializing weight w...")            
             from_token_pos = np.arange(game_env.token_space + 2)
             from_budget_A = np.arange(game_env.budget + 1)
             from_budget_B = np.arange(game_env.budget + 1)
@@ -282,7 +285,7 @@ class Agent():
             synthetic_from_data = pd.MultiIndex.from_product([from_token_pos, from_budget_A, from_budget_B, action_A, action_B], names = ["from_token_pos", "from_budget_A", "from_budget_B", "action_A", "action_B"]).to_frame()
             synthetic_to_data = np.repeat(np.arange((game_env.token_space + 2) * (game_env.budget + 1) * (game_env.budget + 1)), (game_env.budget + 1) * (game_env.budget + 1))
 
-            trained_model = linear_model.LogisticRegression(multi_class = "multinomial", fit_intercept = False, solver = "lbfgs", max_iter = 5000).fit(synthetic_from_data, synthetic_to_data)
+            trained_model = linear_model.LogisticRegression(n_jobs = 11, multi_class = "multinomial", fit_intercept = False, solver = "lbfgs", max_iter = 5000).fit(synthetic_from_data, synthetic_to_data)
             self.w = trained_model.coef_
         else:
             self.w = initial_w
@@ -590,7 +593,13 @@ def find_errors(estimated_q_function_k, estimated_q_function_kp1, policy_A_k, po
 
         S_k = apply_bellman_equation(num_iter_q, gamma, estimated_reward_function_k, estimated_transition_function_kp1, estimated_q_function_k, policy_A_k, policy_B_k) - apply_bellman_equation(num_iter_q, gamma, estimated_reward_function_k, transition_distribution, estimated_q_function_k, policy_A_k, policy_B_k)
         S_k_l2_norm = np.sqrt(np.sum(np.power(S_k, 2)))
-        return epsilon_k_l2_norm, S_k_l2_norm
+
+        ## transition matrix: 8 dimension array in order of (from_token_pos, from_budget_A, from_budget_B, to_token_pos, to_budget_A, to_budget_B, action_A, action_B)
+        ## value function: 3 dimension array in order of (from_token_pos, from_budget_A, from_budget_B)
+        estimated_value_function_k = Agent.estimate_value_function_from_q_function(estimated_q_function_k, policy_A_k, policy_B_k)
+        e_k = np.multiply(transition_distribution - estimated_transition_function_kp1, estimated_value_function_k[:, :, :, np.newaxis, np.newaxis, np.newaxis, np.newaxis, np.newaxis])
+        e_k_l2_norm = np.sqrt(np.sum(np.power(e_k, 2)))
+        return epsilon_k_l2_norm, S_k_l2_norm, e_k_l2_norm
 
 
 def find_error_weighted_norm(estimated_q_function_k, optimal_q_function, initial_state_dist, initial_policy_A, initial_policy_B):
@@ -615,10 +624,48 @@ def find_error_weighted_norm(estimated_q_function_k, optimal_q_function, initial
 def find_error_upper_bound(gamma, c_bar, epsilon_k_l2_norms, S_k_l2_norms, num_iter_k, num_iter_q, Rmax):
     upper_bound =  (2 * gamma / ((1 - gamma) ** 2)) * (c_bar * np.max(np.array(epsilon_k_l2_norms) + np.array(S_k_l2_norms)) + 2 * (gamma ** (num_iter_k * num_iter_q)) * Rmax)
     return upper_bound
+
+
+def collect_statistics(terminate_time, num_iter_k, cbar = 1, Rmax = 1):
+    lhs_l1_norm = []
+    rhs_upper_bound = []
+    epsilon_k_l2_norms = []
+    S_k_l2_norms = []
+    e_k_l2_norms = []
+    for t in range(0, terminate_time):
+        with open("recorded_statistics at time " + str(t) + ".pkl", "rb") as f:
+            record = pickle.load(f)
+        recorded_q_functions = record["recorded_q_functions"]
+        recorded_policy_A = record["recorded_policy_A"]
+        recorded_policy_B = record["recorded_policy_B"]
+        recorded_estimated_transition_matrix = record["recorded_estimated_transition_matrix"]
+        recorded_estimated_reward_function = record["recorded_estimated_reward_function"]
+        state_transition_dist = record["state_transition_dist"]
+        initial_state_dist = record["initial_state_dist"]
+        initial_policy_A = record["initial_policy_A"]
+        initial_policy_B = record["initial_policy_B"]
+        optimal_q_function = record["optimal_q_function"]
+        for k in range(0, num_iter_k - 1):
+            estimated_q_function_k = recorded_q_functions[k]
+            estimated_q_function_kp1 = recorded_q_functions[k + 1]
+            policy_A_k = recorded_policy_A[k]
+            policy_B_k = recorded_policy_B[k]
+            estimated_transition_function_kp1 = recorded_estimated_transition_matrix[k + 1]
+            estimated_reward_function_k = recorded_estimated_reward_function[k]
+            epsilon_k_l2_norm, S_k_l2_norm, e_k_l2_norm = find_errors(estimated_q_function_k, estimated_q_function_kp1, policy_A_k, policy_B_k, gamma, estimated_transition_function_kp1, state_transition_dist, estimated_reward_function_k, num_iter_q)
+            epsilon_k_l2_norms.append(epsilon_k_l2_norm)
+            S_k_l2_norms.append(S_k_l2_norm)
+            e_k_l2_norms.append(e_k_l2_norm)
+            lhs = find_error_weighted_norm(recorded_q_functions[k + 1], optimal_q_function, initial_state_dist, initial_policy_A, initial_policy_B)
+            rhs = find_error_upper_bound(gamma, cbar, epsilon_k_l2_norms, S_k_l2_norms, num_iter_k, num_iter_q, Rmax)
+            lhs_l1_norm.append(lhs)
+            rhs_upper_bound.append(rhs)
+    summary_statistics = pd.DataFrame(data = {"t" : np.repeat(np.arange(terminate_time), num_iter_k - 1), "k" : np.tile(np.arange(terminate_time), num_iter_k - 1), "lhs_l1_norm" : lhs_l1_norm, "rhs_upper_bound" : rhs_upper_bound, "epsilon_k_l2_norms" : epsilon_k_l2_norms, "S_k_l2_norms" : S_k_l2_norms, "e_k_l2_norms" : e_k_l2_norms})
+    summary_statistics.to_csv("recorded_statistics" + ".csv")
         
 
 def run_experiment(budget, token_space, max_time, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q=None, initial_policy_A=None, estimate_prob_transition="logistic", initial_w=None):
-    np.random.seed(0) 
+    np.random.seed(100) 
 
     states = []
     rewards = []
@@ -641,41 +688,8 @@ def run_experiment(budget, token_space, max_time, gamma, num_iter_k, num_sample_
         states.append(state)
         rewards.append(reward)
         actions.append((action_A, action_B))
-    
-    lhs_l1_norm = []
-    rhs_upper_bound = []
-    for t in range(0, min(env.t, max_time)):
-        epsilon_k_l2_norms = []
-        S_k_l2_norms = []
-        with open("recorded_statistics at time " + str(t) + ".pkl", "rb") as f:
-            record = pickle.load(f)
-        recorded_q_functions = record["recorded_q_functions"]
-        recorded_policy_A = record["recorded_policy_A"]
-        recorded_policy_B = record["recorded_policy_B"]
-        recorded_estimated_transition_matrix = record["recorded_estimated_transition_matrix"]
-        recorded_estimated_reward_function = record["recorded_estimated_reward_function"]
-        state_transition_dist = record["state_transition_dist"]
-        initial_state_dist = record["initial_state_dist"]
-        initial_policy_A = record["initial_policy_A"]
-        initial_policy_B = record["initial_policy_B"]
-        optimal_q_function = record["optimal_q_function"]
-        for k in range(0, num_iter_k - 1):
-            estimated_q_function_k = recorded_q_functions[k]
-            estimated_q_function_kp1 = recorded_q_functions[k + 1]
-            policy_A_k = recorded_policy_A[k]
-            policy_B_k = recorded_policy_B[k]
-            estimated_transition_function_kp1 = recorded_estimated_transition_matrix[k + 1]
-            estimated_reward_function_k = recorded_estimated_reward_function[k]
-            epsilon_k_l2_norm, S_k_l2_norm = find_errors(estimated_q_function_k, estimated_q_function_kp1, policy_A_k, policy_B_k, gamma, estimated_transition_function_kp1, state_transition_dist, estimated_reward_function_k, num_iter_q)
-            epsilon_k_l2_norms.append(epsilon_k_l2_norm)
-            S_k_l2_norms.append(S_k_l2_norm)
-        lhs = find_error_weighted_norm(recorded_q_functions[num_iter_k - 1], optimal_q_function, initial_state_dist, initial_policy_A, initial_policy_B)
-        rhs = find_error_upper_bound(gamma, 3, epsilon_k_l2_norms, S_k_l2_norms, num_iter_k, num_iter_q, 1)
-        lhs_l1_norm.append(lhs)
-        rhs_upper_bound.append(rhs)
-    
-    summary_statistics = pd.DataFrame(data = {"t": list(range(0, min(env.t, max_time))), "lhs_l1_norm" : lhs_l1_norm, "rhs_upper_bound" : rhs_upper_bound})
-    summary_statistics.to_csv("recorded_statistics" + ".csv")
+
+    collect_statistics(min(env.t, max_time), num_iter_k, cbar = 1, Rmax = 1)
     return states, rewards
 
 
@@ -684,11 +698,14 @@ token_space = 5
 gamma = 0.5
 num_iter_k = 5
 num_sample_n = 7 * 7 * 7 * 20
-num_iter_q = 25
+num_iter_q = 35
 initial_q = None
 initial_policy_A = None
 max_time = 10
 
-estimate_transition_distribution = "value"
+estimate_transition_distribution = "logistic"
 initial_w = None
 states, rewards = run_experiment(budget, token_space, max_time, gamma, num_iter_k, num_sample_n, num_iter_q, initial_q, initial_policy_A, estimate_transition_distribution, initial_w)
+
+
+#collect_statistics(4, num_iter_k, cbar = 1, Rmax = 1)
